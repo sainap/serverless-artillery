@@ -14,3 +14,11 @@ functions:
     handler: handler.handler
     events:
       - http: ANY /{proxy+}
+
+  reducer:
+    handler: handler.reducer
+    events:
+      - cloudwatchLog: "/aws/lambda/target-${opt:stage, self:provider.stage, 'dev'}-root"
+        filter: '"REQUEST"'
+      - cloudwatchLog: "/aws/lambda/target-${opt:stage, self:provider.stage, 'dev'}-proxy"
+        filter: '"REQUEST"'
