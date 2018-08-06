@@ -18,7 +18,7 @@ chai.use(chaiAsPromised)
 chai.use(sinonChai)
 chai.should()
 
-const expect = chai.expect
+const { expect } = chai
 
 const testJsonScriptPath = path.join(__dirname, 'script.json')
 const testYmlScriptPath = path.join(__dirname, 'dir', 'script.yml')
@@ -47,6 +47,17 @@ class ServerlessFake {
     this.version = '1.0.3'
     this.pluginManager = {
       plugins: [new AwsInvoke()],
+    }
+    this.variables = {
+      populateService: () => BbPromise.resolve(),
+    }
+    this.service = {
+      setFunctionNames: () => {},
+      mergeArrays: () => {},
+      functions: { loadGenerator: { name: 'a-fake-name' } },
+    }
+    this.processedInput = {
+      options: {},
     }
   }
   init() { return slsFakeInit(this) }
@@ -90,10 +101,13 @@ describe('./lib/index.js', function slsArtTests() { // eslint-disable-line prefe
         expect(slsart.impl.findScriptPath('NOT_A_FILE')).to.be.null
       })
       it('returns an absoute path to the local script.yml if no path was given and one exists', () => {
-        const cwd = process.cwd
+        const { cwd } = process
         process.cwd = () => path.join(__dirname, 'dir')
-        expect(slsart.impl.findScriptPath()).to.eql(testYmlScriptPath)
-        process.cwd = cwd
+        try {
+          expect(slsart.impl.findScriptPath()).to.eql(testYmlScriptPath)
+        } finally {
+          process.cwd = cwd
+        }
       })
       it('returns an absoute path to the global script.yml if no path was given and a local one does not exist', () => {
         const expected = path.join(path.resolve(path.join(__dirname, '..', '..', 'lib', 'lambda')), 'script.yml')
@@ -202,7 +216,7 @@ describe('./lib/index.js', function slsArtTests() { // eslint-disable-line prefe
 
     describe('#scriptConstraints', () => {
       const replaceImpl = (timeout, testFunc) => (() => {
-        const config = aws.config
+        const { config } = aws
         aws.config = { httpOptions: { timeout } }
         return testFunc().then(() => {
           aws.config = config
@@ -239,6 +253,9 @@ describe('./lib/index.js', function slsArtTests() { // eslint-disable-line prefe
         expect(res.required).to.equal(28) // 10 + 3 + 15
       })
       it('handles this specific user script', () => {
+        // This test was written to satisfy a specific user who was concerned about the correct treatment
+        // of their script.  As assumptions change due to changes in requirements, please use configuration
+        // to maintain the original intent of the test.
         script = {
           config: {
             phases: [
@@ -258,6 +275,9 @@ describe('./lib/index.js', function slsArtTests() { // eslint-disable-line prefe
               },
             ],
           },
+          _split: {
+            maxChunkDurationInSeconds: 240,
+          },
         }
         const res = slsart.impl.scriptConstraints(script)
         expect(res.allowance).to.equal(118) // 120 - 2
@@ -276,11 +296,11 @@ describe('./lib/index.js', function slsArtTests() { // eslint-disable-line prefe
       )
       it('adjusts to an increased http timeout that is not above the lambda chunk maximum',
         replaceImpl(
-          180000, // 180 s
+          100000, // 100 s
           () => BbPromise.resolve()
             .then(() => {
               const res = slsart.impl.scriptConstraints(script)
-              expect(res.allowance).to.equal(178) // 180 - 2
+              expect(res.allowance).to.equal(98) // 100 - 2
               expect(res.required).to.equal(13) // 10 + 3
             }) // eslint-disable-line comma-dangle
         ) // eslint-disable-line comma-dangle
@@ -291,7 +311,7 @@ describe('./lib/index.js', function slsArtTests() { // eslint-disable-line prefe
           () => BbPromise.resolve()
             .then(() => {
               const res = slsart.impl.scriptConstraints(script)
-              expect(res.allowance).to.equal(238) // 240 - 2
+              expect(res.allowance).to.equal(118) // 120 - 2
               expect(res.required).to.equal(13) // 10 + 3
             }) // eslint-disable-line comma-dangle
         ) // eslint-disable-line comma-dangle
@@ -380,11 +400,301 @@ scenarios:
       })
     })
 
+    const validService = () => ({
+      provider: {
+        iamRoleStatements: [],
+      },
+      functions: {
+        [slsart.constants.TestFunctionName]: {},
+      },
+    })
+
+    describe('#validateService', () => {
+      const aString = 'some value'
+      let service
+      // service config
+      it('rejects falsy service configurations', () => {
+        service = undefined
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects non-object service configurations', () => {
+        service = aString
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      // provider.iamRoleStatements
+      it('rejects falsy provider', () => {
+        service = validService()
+        service.provider = false
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects falsy provider.iamRoleStatements', () => {
+        service = validService()
+        service.provider.iamRoleStatements = false
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects non-array provider.iamRoleStatements', () => {
+        service = validService()
+        service.provider.iamRoleStatements = aString
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      // functions[constants.TestFunctionName]
+      it('rejects falsy functions', () => {
+        service = validService()
+        service.functions = false
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects falsy functions[constants.TestFunctionName]', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName] = false
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects non-object functions[constants.TestFunctionName]', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName] = aString
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      // functions[constants.TestFunctionName].environment['TOPIC_ARN' || 'TOPIC_NAME']
+      it('accepts undefined functions[constants.TestFunctionName].environment', () => {
+        service = validService()
+        delete service.functions[slsart.constants.TestFunctionName].environment
+        expect(() => slsart.impl.validateService(service)).to.not.throw()
+      })
+      it('accepts functions[constants.TestFunctionName].environment without TOPIC_ARN or TOPIC_NAME', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].environment = { NOT_TOPIC_ARN_OR_TOPIC_NAME: aString }
+        expect(() => slsart.impl.validateService(service)).to.not.throw()
+      })
+      it('rejects functions[constants.TestFunctionName].environment with TOPIC_ARN', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].environment = { TOPIC_ARN: aString }
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects functions[constants.TestFunctionName].environment with TOPIC_NAME', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].environment = { TOPIC_NAME: aString }
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      // functions[constants.TestFunctionName].events
+      it('accepts an undefined functions[constants.TestFunctionName].events', () => {
+        service = validService()
+        delete service.functions[slsart.constants.TestFunctionName].events
+        expect(() => slsart.impl.validateService(service)).to.not.throw()
+      })
+      it('rejects non-array functions[constants.TestFunctionName].events', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].events = aString
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      it('rejects functions[constants.TestFunctionName].events with a schedule event named constants.ScheduleName', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].events = [{ schedule: { name: slsart.constants.ScheduleName } }]
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+      // resources.Resources[constants.AlertingName]
+      it('accepts an undefined resources.Resources[constants.AlertingName]', () => {
+        service = validService()
+        delete service.resources
+        expect(() => slsart.impl.validateService(service)).to.not.throw()
+      })
+      it('accepts an undefined resources.Resources[constants.AlertingName]', () => {
+        service = validService()
+        if (service.resources) {
+          delete service.resources.Resources
+        }
+        expect(() => slsart.impl.validateService(service)).to.not.throw()
+      })
+      it('accepts an undefined resources.Resources[constants.AlertingName]', () => {
+        service = validService()
+        if (service.resources && service.resources.Resources) {
+          delete service.resources.Resources[slsart.constants.AlertingName]
+        }
+        expect(() => slsart.impl.validateService(service)).to.not.throw()
+      })
+      it('reject a defined resources.Resources[constants.AlertingName]', () => {
+        service = validService()
+        service.resources = {
+          Resources: {
+            [slsart.constants.AlertingName]: aString,
+          },
+        }
+        expect(() => slsart.impl.validateService(service)).to.throw()
+      })
+    })
+
+    describe('#addAssets', () => {
+      let service
+      it('adds the expected assets to the given service', () => {
+        service = validService()
+        slsart.impl.addAssets(service, { threshold: 1, p: 'foo.yml' })
+        expect(service.provider.iamRoleStatements.length).to.equal(1)
+        expect(service.functions[slsart.constants.TestFunctionName].environment.TOPIC_ARN)
+          .to.eql({ Ref: slsart.constants.AlertingName })
+        expect(service.functions[slsart.constants.TestFunctionName].environment.TOPIC_NAME)
+          .to.eql({ 'Fn::GetAtt': [slsart.constants.AlertingName, 'TopicName'] })
+        expect(service.functions[slsart.constants.TestFunctionName].events[0].schedule).to.be.a('object')
+        expect(service.functions[slsart.constants.TestFunctionName].events[0].schedule.name).to.have.string(slsart.constants.ScheduleName)
+        expect(service.resources.Resources[`${slsart.constants.AlertingName}${slsart.constants.yamlComments.doNotEditKey}`]).to.be.an('object')
+      })
+      it('retains existing environment variables', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].environment = { VAR: 'VAL' }
+        expect(slsart.impl.addAssets(service, {}).functions[slsart.constants.TestFunctionName].environment.VAR).to.equal('VAL')
+      })
+      it('retains existing events', () => {
+        service = validService()
+        service.functions[slsart.constants.TestFunctionName].events = ['foo']
+        expect(service.functions[slsart.constants.TestFunctionName].events[0]).to.equal('foo')
+      })
+      it('retains existing resources', () => {
+        service = validService()
+        service.resources = { foo: 'bar' }
+        expect(service.resources).to.have.property('foo', 'bar')
+      })
+      it('retains existing resources.Resources', () => {
+        service = validService()
+        service.resources = { Resources: { foo: 'bar' } }
+        expect(service.resources.Resources).to.have.property('foo', 'bar')
+      })
+    })
+
+    describe('#splitIgnore', () => {
+      let str
+      it('splits strings by newlines', () => {
+        str = 'a\nb\nc'
+        expect(slsart.impl.splitIgnore(str)).to.eql(['a', 'b', 'c'])
+      })
+      it('converts `-\n  -` to `-  -` and splits', () => {
+        str = 'a\n-\n  -\n    b'
+        expect(slsart.impl.splitIgnore(str)).to.eql(['a', '- -', '    b'])
+      })
+      it('removes leading and trailing whitespace', () => {
+        str = ' \ta\t \n \tb \t'
+        expect(slsart.impl.splitIgnore(str)).to.eql(['a\t ', ' \tb'])
+      })
+      it('removes single and double quotes', () => {
+        str = '\'a\'\n"b"\nc'
+        expect(slsart.impl.splitIgnore(str)).to.eql(['a', 'b', 'c'])
+      })
+    })
+
+    describe('#splitExcept', () => {
+      let str
+      it('splits strings by newlines', () => {
+        str = 'a\nb\nc'
+        expect(slsart.impl.splitExcept(str)).to.eql(['a', 'b', 'c'])
+      })
+      it('ignores newlines within array equivalencies', () => {
+        str = 'a\n-\n  - b\nc'
+        expect(slsart.impl.splitExcept(str)).to.eql(['a', '-\n  - b', 'c'])
+      })
+      it('ignores newlines within larger array equivalencies', () => {
+        str = 'a\n  -\n    - b\nc'
+        expect(slsart.impl.splitExcept(str)).to.eql(['a', '  -\n    - b', 'c'])
+      })
+      it('ignores many newlines within array equivalencies', () => {
+        str = 'a\n-\n\n\n\n\n\n\n\n\n\n\n\n\n  - b\nc'
+        expect(slsart.impl.splitExcept(str)).to.eql(['a', '-\n\n\n\n\n\n\n\n\n\n\n\n\n  - b', 'c'])
+      })
+    })
+
+    describe('#compareRestore', () => {
+      let existing
+      let augmented
+      let expected
+      it('leaves unchanged strings alone', () => {
+        existing = 'a string'
+        augmented = existing
+        expected = existing
+        expect(slsart.impl.compareRestore(existing, augmented)).to.equal(existing)
+      })
+      it('leaves additive only augmentations alone', () => {
+        existing = 'a string\n'
+        augmented = `${existing}\nanother string\n`
+        expected = augmented
+        expect(slsart.impl.compareRestore(existing, augmented)).to.equal(expected)
+      })
+      it('restores removed comments', () => {
+        existing = 'foo: # an object\n  bar: "biz"\n'
+        augmented = 'foo:\n  bar: "biz"\n  gar: "giz"\n'
+        expected = 'foo: # an object\n  bar: "biz"\n  gar: "giz"\n'
+        expect(slsart.impl.compareRestore(existing, augmented)).to.equal(expected)
+      })
+      // TODO too few cases?
+    })
+
+    describe('#replaceCommentKeys', () => {
+      let input
+      let result
+      it('replaces the known keys', () => {
+        input = `${
+          slsart.constants.yamlComments.doNotEditKey}\n${
+          slsart.constants.yamlComments.mustMatchKey}\n${
+          slsart.constants.yamlComments.snsSubscriptionsKey}\nEffect: Allow`
+        result = slsart.impl.replaceCommentKeys(input)
+        expect(result).to.not.have.string(slsart.constants.yamlComments.doNotEditKey)
+        expect(result).to.not.have.string(slsart.constants.yamlComments.mustMatchKey)
+        expect(result).to.not.have.string(slsart.constants.yamlComments.snsSubscriptionsKey)
+        expect(result).to.not.have.string('Effect: Allow')
+      })
+    })
+
+    describe('#writeBackup', () => {
+      const err = { code: 'EEXIST' }
+      const content = 'content'
+      let fsWriteFileAsyncStub
+      beforeEach(() => {
+        fsWriteFileAsyncStub = sinon.stub(fs, 'writeFileAsync')
+      })
+      afterEach(() => {
+        fsWriteFileAsyncStub.restore()
+      })
+      it('writes content to serverless.yml.bak', () => {
+        fsWriteFileAsyncStub.returns(BbPromise.resolve())
+        return slsart.impl.writeBackup(content).should.be.fulfilled
+          .then(() => {
+            fsWriteFileAsyncStub.should.have.been.calledOnce
+            expect(fsWriteFileAsyncStub.args[0][0]).to.eql(`${slsart.constants.ServerlessFile}.bak`)
+          })
+      })
+      it('tries writing to subsequent serverless.yml.N.bak files until succeeding', () => {
+        fsWriteFileAsyncStub.onCall(0).rejects(err)
+        fsWriteFileAsyncStub.onCall(1).rejects(err)
+        fsWriteFileAsyncStub.onCall(2).rejects(err)
+        fsWriteFileAsyncStub.onCall(3).rejects(err)
+        fsWriteFileAsyncStub.onCall(4).resolves()
+        return slsart.impl.writeBackup(content).should.be.fulfilled
+          .then(() => {
+            fsWriteFileAsyncStub.should.have.callCount(5)
+            expect(fsWriteFileAsyncStub.args[0][0]).to.eql(`${slsart.constants.ServerlessFile}.bak`)
+            expect(fsWriteFileAsyncStub.args[1][0]).to.eql(`${slsart.constants.ServerlessFile}.1.bak`)
+            expect(fsWriteFileAsyncStub.args[2][0]).to.eql(`${slsart.constants.ServerlessFile}.2.bak`)
+            expect(fsWriteFileAsyncStub.args[3][0]).to.eql(`${slsart.constants.ServerlessFile}.3.bak`)
+            expect(fsWriteFileAsyncStub.args[4][0]).to.eql(`${slsart.constants.ServerlessFile}.4.bak`)
+          })
+      })
+      it('gives up writing after 100 attempts', () => {
+        fsWriteFileAsyncStub.returns(BbPromise.reject(err))
+        return slsart.impl.writeBackup(content).should.be.rejected
+          .then(() => {
+            fsWriteFileAsyncStub.should.have.callCount(slsart.constants.backupAttempts)
+          })
+      })
+      it('throws errors without `code = \'EEXIST\'`', () => {
+        const anotherErr = new Error('not eexist')
+        anotherErr.code = 'NOT_EEXIST'
+        fsWriteFileAsyncStub.returns(BbPromise.reject(anotherErr))
+        return slsart.impl.writeBackup(content).should.be.rejectedWith(anotherErr)
+          .then(() => {
+            fsWriteFileAsyncStub.should.have.callCount(1)
+          })
+      })
+    })
+
     describe('#findServicePath', () => {
       const lambdaPath = path.resolve('lib', 'lambda')
       const replaceImpl = (cwdResult, fileExistsResult, testFunc) => (() => {
-        const cwd = process.cwd
-        const fileExists = slsart.impl.fileExists
+        const { cwd } = process
+        const { fileExists } = slsart.impl
         process.cwd = () => cwdResult
         slsart.impl.fileExists = () => fileExistsResult
         return testFunc().then(() => {
@@ -458,7 +768,7 @@ scenarios:
       })
       it('handles rejections along the promise chain', () => {
         const fakeInit = slsFakeInit
-        slsFakeInit = () => Promise.reject('rejected')
+        slsFakeInit = () => Promise.reject(new Error('rejected'))
         return slsart.impl.serverlessRunner({})
           .then(() => { slsFakeInit = fakeInit })
           .catch((ex) => { slsFakeInit = fakeInit; throw ex })
@@ -491,8 +801,9 @@ scenarios:
       }\tYour function has been invoked. The load is scheduled to be completed in ${durationInSeconds} seconds.${os.EOL}`
 
       const replaceImpl = (scriptConstraintsResult, serverlessRunnerResult, testFunc) => (() => {
-        const scriptConstraints = slsart.impl.scriptConstraints
-        const serverlessRunner = slsart.impl.serverlessRunner
+        const { scriptConstraints } = slsart.impl
+        scriptConstraints.task = { sampling: task.def.getSettings() }
+        const { serverlessRunner } = slsart.impl
         const replaceInput = slsart.impl.replaceArgv
         slsart.impl.scriptConstraints = () => scriptConstraintsResult
         slsart.impl.serverlessRunner = () => BbPromise.resolve(serverlessRunnerResult)
@@ -507,7 +818,7 @@ scenarios:
       let log
       let logs
       beforeEach(() => {
-        log = console.log
+        ({ log } = console)
         logs = []
         console.log = (...args) => {
           if (args.length === 1) {
@@ -570,7 +881,7 @@ scenarios:
         )
       })
       describe('acceptance mode', () => {
-        it('adds `mode: \'acc\' to the script',
+        it('adds `mode: \'acc\'` to the script',
           replaceImpl(
             { allowance: 2, required: 3 },
             {},
@@ -622,7 +933,7 @@ scenarios:
             { errors: 1, reports: [{ errors: 1 }] },
             () => {
               // save/replace process.exit
-              const exit = process.exit
+              const { exit } = process
               let exitCode
               process.exit = (code) => {
                 exitCode = code
@@ -632,9 +943,7 @@ scenarios:
                 acceptance: true,
               }).then(() => {
                 expect(exitCode).to.equal(1)
-              }).catch(() => {
-                expect.fail()
-              }).then(() => {
+              }).finally(() => {
                 process.exit = exit
               })
             } // eslint-disable-line comma-dangle
@@ -664,6 +973,134 @@ scenarios:
           ) // eslint-disable-line comma-dangle
         )
       })
+      describe('monitoring mode', () => {
+        it('adds `mode: \'mon\'` to the script',
+          replaceImpl(
+            { allowance: 2, required: 3 },
+            {},
+            () => slsart.invoke({ monitoring: true, d: testJsonScriptStringified })
+              .then(() => expect(logs[1]).to.eql(completeMessage)) // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+        it('respects scripts declaring monitoring mode',
+          replaceImpl(
+            { allowance: 2, required: 3 },
+            {},
+            () => {
+              const script = JSON.parse(testJsonScriptStringified)
+              script.mode = task.def.modes.MON
+              return slsart.invoke({ d: JSON.stringify(script) })
+                .then(() => expect(logs[1]).to.eql(completeMessage))
+            } // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+        it('respects scripts declaring monitoring mode',
+          replaceImpl(
+            { allowance: 2, required: 3 },
+            {},
+            () => {
+              const script = JSON.parse(testJsonScriptStringified)
+              script.mode = task.def.modes.MONITORING
+              return slsart.invoke({ d: JSON.stringify(script) })
+                .then(() => expect(logs[1]).to.eql(completeMessage))
+            } // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+        it('reports monitoring test results to the console',
+          replaceImpl(
+            { allowance: 2, required: 1 },
+            { foo: 'bar' },
+            () => {
+              const script = JSON.parse(testJsonScriptStringified)
+              script.mode = 'mon'
+              return slsart.invoke({ acceptance: true, d: testJsonScriptStringified })
+                .then(() => {
+                  expect(logs[3]).to.eql(JSON.stringify({ foo: 'bar' }, null, 2))
+                })
+            } // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+        it('exits the process with a non-zero exit code when an error occurs during the monitoring test',
+          replaceImpl(
+            { allowance: 2, required: 1 },
+            { errors: 5, reports: [{ errors: 5 }] },
+            () => {
+              // save/replace process.exit
+              const { exit } = process
+              let exitCode
+              process.exit = (code) => {
+                exitCode = code
+              }
+              return slsart.invoke({
+                script: phaselessScriptPath,
+                monitoring: true,
+              }).then(() => {
+                expect(exitCode).to.equal(5)
+              }).finally(() => {
+                process.exit = exit
+              })
+            } // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+        const result = { msg: 'a result' }
+        it('writes only the JSON result of the invocation to the console.log stream',
+          replaceImpl(
+            { allowance: 2, required: 1 },
+            result,
+            () => slsart.invoke({ jo: true, monitoring: true, d: testJsonScriptStringified })
+              .then(() => {
+                expect(logs.length).to.be.equal(1)
+                expect(logs[0]).to.equal(JSON.stringify(result, null, 2))
+              }) // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+        it('writes only the JSON result of the invocation to the console.log stream',
+          replaceImpl(
+            { allowance: 2, required: 1 },
+            result,
+            () => slsart.invoke({ jsonOnly: true, monitoring: true, d: testJsonScriptStringified })
+              .then(() => {
+                expect(logs.length).to.be.equal(1)
+                expect(logs[0]).to.equal(JSON.stringify(result, null, 2))
+              }) // eslint-disable-line comma-dangle
+          ) // eslint-disable-line comma-dangle
+        )
+      })
+    })
+
+    describe('#kill', () => {
+      let awsStub
+      let removeStub
+      beforeEach(() => {
+        awsStub = sinon.stub(aws.Service.prototype, 'makeRequest')
+        removeStub = sinon.stub(slsart, 'remove')
+      })
+      afterEach(() => {
+        awsStub.restore()
+        removeStub.restore()
+        process.argv = argv.slice(0)
+      })
+      it('removes the function after concurrency is set to zero', () => {
+        const afterStub = sinon.stub().returns(BbPromise.resolve())
+        awsStub.returns({
+          promise: () => BbPromise.delay(100).then(afterStub),
+        })
+        removeStub.returns(BbPromise.resolve())
+        return slsart.kill({}).should.be.fulfilled
+          .then(() => {
+            afterStub.should.have.been.calledBefore(removeStub)
+          })
+      })
+
+      it('fails when the function does not exist', () => {
+        awsStub.returns({
+          promise: () => BbPromise()
+            .then(() => BbPromise.reject({
+              code: 'ResourceNotFoundException',
+            })),
+        })
+        return slsart.kill({}).should.be.rejected
+      })
     })
 
     describe('#remove', () => {
@@ -683,7 +1120,7 @@ scenarios:
     })
 
     describe('#script', () => {
-      const generateScript = slsart.impl.generateScript
+      const { generateScript } = slsart.impl
       const notAFile = 'not.a.script.yml'
       it('refuses to overwrite an existing script',
         () => slsart.script({ out: 'README.md' }).should.be.rejected // eslint-disable-line comma-dangle
@@ -716,7 +1153,7 @@ scenarios:
     })
 
     describe('#configure', function exportsConfigure() { // eslint-disable-line prefer-arrow-callback
-      const cwd = process.cwd
+      const { cwd } = process
       const replaceCwd = (dirToReplace) => {
         process.cwd = () => dirToReplace
       }
@@ -735,6 +1172,10 @@ scenarios:
         })
         fs.rmdirSync(dir)
       }
+      // ## !! NOTE !! ##
+      // There is a known issue on Windows where files are not deleted according to expectation
+      // It has been decided that this is not worth resolving, not that a contribution to resolve
+      // the matter would be unwelcome.
       beforeEach(() => fs.mkdirAsync(tmpdir))
       afterEach(() => {
         restoreCwd()
@@ -753,9 +1194,9 @@ scenarios:
         npmInstallResult = BbPromise.resolve
         return slsart.configure({ debug: true, trace: true })
           .then(() => BbPromise.all(slsart.constants.ServerlessFiles.map(
-            file => expect(fs.accessAsync(path.join(tmpdir, file))).to.eventually.be.fullfilled // eslint-disable-line comma-dangle
+            file => expect(fs.accessAsync(path.join(tmpdir, file))).to.eventually.be.fulfilled // eslint-disable-line comma-dangle
           )))
-          .should.be.fullfilled
+          .should.be.fulfilled
       })
       it('ensures that the invalid character "_" is not part of the generated short id appended to the service name', () => {
         const shortidRes = shortidResult
@@ -770,7 +1211,7 @@ scenarios:
             const sls = yaml.safeLoad(yml)
             expect(sls.service).to.not.have.string('_')
           })
-          .should.be.fullfilled
+          .should.be.fulfilled
       })
       it('rejects the promise if npm install fails',
         function createUniqueArtifacts() { // eslint-ignore-line prefer-arrow-callback
@@ -780,6 +1221,69 @@ scenarios:
           return slsart.configure({}).should.be.rejected
         } // eslint-disable-line comma-dangle
       )
+    })
+
+    describe('#monitor', () => {
+      let scriptStub
+      let configureStub
+      let fileExistsStub
+      let writeBackupStub
+      let fsReadFileAsyncStub
+      let fsWriteFileAsyncStub
+      beforeEach(() => {
+        scriptStub = sinon.stub(slsart, 'script').resolves()
+        configureStub = sinon.stub(slsart, 'configure').resolves()
+        fileExistsStub = sinon.stub(slsart.impl, 'fileExists').returns(true)
+        writeBackupStub = sinon.stub(slsart.impl, 'writeBackup').resolves()
+        fsReadFileAsyncStub = sinon.stub(fs, 'readFileAsync').resolves(JSON.stringify({
+          provider: {
+            iamRoleStatements: [],
+          },
+          functions: {
+            [slsart.constants.TestFunctionName]: {},
+          },
+        }))
+        fsWriteFileAsyncStub = sinon.stub(fs, 'writeFileAsync').resolves()
+      })
+      afterEach(() => {
+        scriptStub.restore()
+        configureStub.restore()
+        fileExistsStub.restore()
+        writeBackupStub.restore()
+        fsReadFileAsyncStub.restore()
+        fsWriteFileAsyncStub.restore()
+      })
+      it('modifies and writes the service', () => slsart.monitor({}).should.be.fulfilled
+        .then(() => fsWriteFileAsyncStub.should.have.been.called))
+      it('writes a backup if serverless.yml is present', () => slsart.monitor({}).should.be.fulfilled
+        .then(() => {
+          scriptStub.should.not.have.been.called
+          configureStub.should.not.have.been.called
+          writeBackupStub.should.have.been.calledOnce
+        }))
+      it('generates script, configures, and does not write a backup if no script.yml or serverless.yml', () => {
+        fileExistsStub.returns(false)
+        return slsart.monitor({}).should.be.fulfilled
+          .then(() => {
+            scriptStub.should.have.been.calledOnce
+            configureStub.should.have.been.calledOnce
+            writeBackupStub.should.not.have.been.called
+          })
+      })
+      it('rejects the monitor command if running script fails', () => {
+        fileExistsStub.returns(false)
+        scriptStub.returns(BbPromise.reject(new Error('reasons')))
+        return slsart.monitor({}).should.be.rejected
+      })
+      it('rejects the monitor command if running configure fails', () => {
+        fileExistsStub.returns(false)
+        configureStub.returns(BbPromise.reject(new Error('reasons')))
+        return slsart.monitor({}).should.be.rejected
+      })
+      it('rejects the monitor command if reading serverless.yml fails', () => {
+        fsReadFileAsyncStub.returns(BbPromise.reject(new Error('reasons')))
+        return slsart.monitor({}).should.be.rejected
+      })
     })
   })
 })

@@ -7,7 +7,7 @@ const sinonChai = require('sinon-chai')
 
 chai.use(sinonChai)
 
-const expect = chai.expect
+const { expect } = chai
 
 // eslint-disable-next-line import/no-dynamic-require
 const func = require(path.join('..', '..', '..', 'lib', 'lambda', 'func.js'))
@@ -19,6 +19,9 @@ let phase
 let result
 let expected
 let defaultSettings
+
+const runOnceSettings = func.def.getSettings()
+runOnceSettings.task = { sampling: task.def.defaultsToSettings(task.def.acceptance) }
 
 const validScript = () => ({
   config: {
@@ -982,7 +985,7 @@ describe('./lib/lambda/taskPlan.js', () => {
     })
 
     // ######################
-    // ## REINTERPRETATION ##
+    // ## SERVICE SAMPLING ##
     // ######################
     /**
      * SPLIT SCRIPT BY FLOW
@@ -1005,13 +1008,14 @@ describe('./lib/lambda/taskPlan.js', () => {
             },
           ],
         }
-        const scripts = task.plan.impl.splitScriptByFlow(newScript)
+        const scripts = task.plan.impl.splitScriptByFlow(newScript, runOnceSettings)
         expect(scripts).to.deep.equal([
           {
             mode: 'perf',
             config: {
               target: 'https://aws.amazon.com',
               phases: [
+                { pause: scripts[0].config.phases[0].pause },
                 { duration: 1, arrivalRate: 1 },
               ],
             },
@@ -1047,13 +1051,14 @@ describe('./lib/lambda/taskPlan.js', () => {
             },
           ],
         }
-        const scripts = task.plan.impl.splitScriptByFlow(newScript)
+        const scripts = task.plan.impl.splitScriptByFlow(newScript, runOnceSettings)
         expect(scripts).to.deep.equal([
           {
             mode: 'perf',
             config: {
               target: 'https://aws.amazon.com',
               phases: [
+                { pause: scripts[0].config.phases[0].pause },
                 { duration: 1, arrivalRate: 1 },
               ],
             },
@@ -1070,6 +1075,7 @@ describe('./lib/lambda/taskPlan.js', () => {
             config: {
               target: 'https://aws.amazon.com',
               phases: [
+                { pause: scripts[1].config.phases[0].pause },
                 { duration: 1, arrivalRate: 1 },
               ],
             },
@@ -1082,6 +1088,77 @@ describe('./lib/lambda/taskPlan.js', () => {
             ],
           },
         ])
+      })
+      it('generates unique pause lengths for each flow script', () => {
+        const newScript = {
+          mode: 'acc',
+          sampling: {
+            size: 1,
+          },
+          config: {
+            target: 'https://aws.amazon.com',
+            phases: [
+              { duration: 1000, arrivalRate: 1000, rampTo: 1000 },
+            ],
+          },
+          scenarios: [
+            {
+              flow: [
+                { get: { url: '/1' } },
+              ],
+            },
+            {
+              flow: [
+                { get: { url: '/2' } },
+              ],
+            },
+            {
+              flow: [
+                { get: { url: '/3' } },
+              ],
+            },
+            {
+              flow: [
+                { get: { url: '/4' } },
+              ],
+            },
+          ],
+        }
+        result = task.plan.impl.splitScriptByFlow(newScript, runOnceSettings)
+        const pauses = result.map(scriptChunk => scriptChunk.config.phases[0].pause)
+        let equalities = 0
+        pauses.forEach((pause, index) => {
+          pauses.slice(index + 1).forEach((value) => {
+            if (pause === value) {
+              equalities += 1
+            }
+          })
+        })
+        expect(equalities).to.be.below(2) // allow one because randomness, probability of two is miniscule
+      })
+    })
+
+    describe('#generateSamplingPhases', () => {
+      it('uses the given sampling configuration to generate phases', () => {
+        const sampling = {
+          size: 1000,
+          averagePause: 5,
+          pauseVariance: 1,
+        }
+        result = task.plan.impl.generateSamplingPhases({ task: { sampling } })
+        expect(result.length).to.equal(sampling.size * 2)
+        expect(result.filter(chunkPhase => // filter for any pauses with a pause value outside of [avgPause - pauseVar, avgPause + pauseVar]
+          'pause' in chunkPhase &&
+          (
+            chunkPhase.pause < sampling.averagePause - sampling.pauseVariance ||
+            chunkPhase.pause > sampling.averagePause + sampling.pauseVariance
+          ) // eslint-disable-line comma-dangle
+        ).length).to.equal(0)
+        expect(result.filter( // filter for any sample phases specifying more than one arrival
+          chunkPhase => (
+            !('pause' in chunkPhase) &&
+            (chunkPhase.duration !== 1 || chunkPhase.arrivalRate !== 1)) // eslint-disable-line comma-dangle
+        ).length).to.equal(0)
       })
     })
 
@@ -1145,7 +1222,7 @@ describe('./lib/lambda/taskPlan.js', () => {
       })
     })
 
-    describe('#planAcceptance', () => {
+    describe('#planSamples', () => {
       let splitScriptByFlowStub
       beforeEach(() => {
         splitScriptByFlowStub = sinon.stub(task.plan.impl, 'splitScriptByFlow').returns()
@@ -1155,52 +1232,68 @@ describe('./lib/lambda/taskPlan.js', () => {
       })
       it('adds _start and _invokeType to the given event', () => {
         script = {}
-        task.plan.impl.planAcceptance(1, script)
+        task.plan.impl.planSamples(1, script, runOnceSettings)
         expect(script._start).to.equal(1)
         expect(script._invokeType).to.eql('RequestResponse')
-        expect(splitScriptByFlowStub).to.have.been.calledWithExactly(script)
+        expect(splitScriptByFlowStub).to.have.been.calledWithExactly(script, runOnceSettings)
       })
     })
 
     describe('#planTask', () => {
-      let planAcceptanceStub
+      let planSamplesStub
       let planPerformanceStub
       beforeEach(() => {
-        planAcceptanceStub = sinon.stub(task.plan.impl, 'planAcceptance').returns()
+        planSamplesStub = sinon.stub(task.plan.impl, 'planSamples').returns()
         planPerformanceStub = sinon.stub(task.plan.impl, 'planPerformance').returns()
       })
       afterEach(() => {
-        planAcceptanceStub.restore()
+        planSamplesStub.restore()
         planPerformanceStub.restore()
       })
       it('detects the lack of mode and calls planPerformance', () => {
         script = {}
         task.plan.impl.planTask(1, script, defaultSettings)
-        expect(planAcceptanceStub).to.not.have.been.called
+        expect(planSamplesStub).to.not.have.been.called
         expect(planPerformanceStub).to.have.been.calledOnce
       })
       it(`detects mode "${task.def.modes.PERF}" and calls planPerformance`, () => {
         script = { mode: task.def.modes.PERF }
         task.plan.impl.planTask(1, script, defaultSettings)
-        expect(planAcceptanceStub).to.not.have.been.called
+        expect(planSamplesStub).to.not.have.been.called
         expect(planPerformanceStub).to.have.been.calledOnce
       })
       it(`detects mode "${task.def.modes.PERFORMANCE}" and calls planPerformance`, () => {
         script = { mode: task.def.modes.PERFORMANCE }
         task.plan.impl.planTask(1, script, defaultSettings)
-        expect(planAcceptanceStub).to.not.have.been.called
+        expect(planSamplesStub).to.not.have.been.called
         expect(planPerformanceStub).to.have.been.calledOnce
       })
-      it(`detects mode "${task.def.modes.ACC}" and calls planAcceptance`, () => {
+      it(`detects mode "${task.def.modes.ACC}" and calls planSamples with sampleWithAcceptanceDefaults`, () => {
         script = { mode: task.def.modes.ACC }
         task.plan.impl.planTask(1, script, defaultSettings)
-        expect(planAcceptanceStub).to.have.been.calledOnce
+        expect(planSamplesStub).to.have.been.calledOnce
+        expect(planSamplesStub.args[0][2]).to.equal(defaultSettings)
         expect(planPerformanceStub).to.not.have.been.called
       })
-      it(`detects mode "${task.def.modes.ACCEPTANCE}" and calls planAcceptance`, () => {
+      it(`detects mode "${task.def.modes.ACCEPTANCE}" and calls planSamples with sampleWithAcceptanceDefaults`, () => {
         script = { mode: task.def.modes.ACCEPTANCE }
         task.plan.impl.planTask(1, script, defaultSettings)
-        expect(planAcceptanceStub).to.have.been.calledOnce
+        expect(planSamplesStub).to.have.been.calledOnce
+        expect(planSamplesStub.args[0][2]).to.equal(defaultSettings)
+        expect(planPerformanceStub).to.not.have.been.called
+      })
+      it(`detects mode "${task.def.modes.MON}" and calls planSamples with sampleWithMonitoringDefaults`, () => {
+        script = { mode: task.def.modes.MON }
+        task.plan.impl.planTask(1, script, defaultSettings)
+        expect(planSamplesStub).to.have.been.calledOnce
+        expect(planSamplesStub.args[0][2]).to.equal(defaultSettings)
+        expect(planPerformanceStub).to.not.have.been.called
+      })
+      it(`detects mode "${task.def.modes.MONITORING}" and calls planSamples with sampleWithMonitoringDefaults`, () => {
+        script = { mode: task.def.modes.MONITORING }
+        task.plan.impl.planTask(1, script, defaultSettings)
+        expect(planSamplesStub).to.have.been.calledOnce
+        expect(planSamplesStub.args[0][2]).to.equal(defaultSettings)
         expect(planPerformanceStub).to.not.have.been.called
       })
     })
@@ -1209,46 +1302,86 @@ describe('./lib/lambda/taskPlan.js', () => {
       it('correctly calculates a large ramp down', () => {
         script = { config: { phases: [{ duration: 900, arrivalRate: 200, rampTo: 1 }] } }
         expected = [
-          { config: { phases: [{ duration: 660, arrivalRate: 147, rampTo: 1 }] }, _genesis: 0, _start: 255000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 226, arrivalRate: 25 }, { duration: 14, arrivalRate: 25, rampTo: 22 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 115, arrivalRate: 25 }, { duration: 111, arrivalRate: 25, rampTo: 1 }, { pause: 14 }] }, _genesis: 0, _start: 15000 },
-          { config: { phases: [{ duration: 115, arrivalRate: 25, rampTo: 1 }, { pause: 111 }, { pause: 14 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 780, arrivalRate: 173, rampTo: 1 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 111, arrivalRate: 25 }, { duration: 9, arrivalRate: 25, rampTo: 23 }] }, _genesis: 0, _start: 15000 },
+          { config: { phases: [{ duration: 111, arrivalRate: 25, rampTo: 1 }, { pause: 9 }] }, _genesis: 0, _start: 15000 },
         ]
         // Split #1
         result = task.plan.impl.planTask(0, script, defaultSettings)
         expect(result).to.be.eql(expected)
         expected = [
-          { config: { phases: [{ duration: 420, arrivalRate: 94, rampTo: 1 }] }, _genesis: 0, _start: 495000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
-          { config: { phases: [{ duration: 213, arrivalRate: 25 }, { duration: 27, arrivalRate: 25, rampTo: 19 }] }, _genesis: 0, _start: 255000 },
-          { config: { phases: [{ duration: 102, arrivalRate: 25 }, { duration: 111, arrivalRate: 25, rampTo: 1 }, { pause: 27 }] }, _genesis: 0, _start: 255000 },
-          { config: { phases: [{ duration: 102, arrivalRate: 22, rampTo: 1 }, { pause: 111 }, { pause: 27 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 660, arrivalRate: 147, rampTo: 1 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 106, arrivalRate: 25 }, { duration: 14, arrivalRate: 25, rampTo: 22 }] }, _genesis: 0, _start: 135000 },
+          { config: { phases: [{ duration: 106, arrivalRate: 23, rampTo: 1 }, { pause: 14 }] }, _genesis: 0, _start: 135000 },
         ]
         // Split #2
         result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
         expect(result).to.be.eql(expected)
         expected = [
-          { config: { phases: [{ duration: 180, arrivalRate: 41, rampTo: 1 }] }, _genesis: 0, _start: 735000 },
-          { config: { phases: [{ duration: 240, arrivalRate: 25 }] }, _genesis: 0, _start: 495000 },
-          { config: { phases: [{ duration: 199, arrivalRate: 25 }, { duration: 41, arrivalRate: 25, rampTo: 16 }] }, _genesis: 0, _start: 495000 },
-          { config: { phases: [{ duration: 88, arrivalRate: 25 }, { duration: 111, arrivalRate: 25, rampTo: 1 }, { pause: 41 }] }, _genesis: 0, _start: 495000 },
-          { config: { phases: [{ duration: 88, arrivalRate: 19, rampTo: 1 }, { pause: 111 }, { pause: 41 }] }, _genesis: 0, _start: 495000 },
+          { config: { phases: [{ duration: 540, arrivalRate: 120, rampTo: 1 }] }, _genesis: 0, _start: 375000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 98, arrivalRate: 25 }, { duration: 22, arrivalRate: 25, rampTo: 20 }] }, _genesis: 0, _start: 255000 },
+          { config: { phases: [{ duration: 98, arrivalRate: 22, rampTo: 1 }, { pause: 22 }] }, _genesis: 0, _start: 255000 },
         ]
         // Split #3
         result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
         expect(result).to.be.eql(expected)
         expected = [
-          { config: { phases: [{ duration: 72, arrivalRate: 25 }, { duration: 108, arrivalRate: 25, rampTo: 1 }] }, _genesis: 0, _start: 735000 },
-          { config: { phases: [{ duration: 72, arrivalRate: 16, rampTo: 1 }, { pause: 108 }] }, _genesis: 0, _start: 735000 },
+          { config: { phases: [{ duration: 420, arrivalRate: 94, rampTo: 1 }] }, _genesis: 0, _start: 495000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 375000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 375000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 375000 },
+          { config: { phases: [{ duration: 92, arrivalRate: 25 }, { duration: 28, arrivalRate: 25, rampTo: 19 }] }, _genesis: 0, _start: 375000 },
+          { config: { phases: [{ duration: 92, arrivalRate: 20, rampTo: 1 }, { pause: 28 }] }, _genesis: 0, _start: 375000 },
         ]
         // Split #4
+        result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
+        expect(result).to.be.eql(expected)
+        expected = [
+          { config: { phases: [{ duration: 300, arrivalRate: 67, rampTo: 1 }] }, _genesis: 0, _start: 615000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 495000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 495000 },
+          { config: { phases: [{ duration: 84, arrivalRate: 25 }, { duration: 36, arrivalRate: 25, rampTo: 17 }] }, _genesis: 0, _start: 495000 },
+          { config: { phases: [{ duration: 84, arrivalRate: 19, rampTo: 1 }, { pause: 36 }] }, _genesis: 0, _start: 495000 },
+        ]
+        // Split #5
+        result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
+        expect(result).to.be.eql(expected)
+        expected = [
+          { config: { phases: [{ duration: 180, arrivalRate: 41, rampTo: 1 }] }, _genesis: 0, _start: 735000 },
+          { config: { phases: [{ duration: 120, arrivalRate: 25 }] }, _genesis: 0, _start: 615000 },
+          { config: { phases: [{ duration: 78, arrivalRate: 25 }, { duration: 42, arrivalRate: 25, rampTo: 16 }] }, _genesis: 0, _start: 615000 },
+          { config: { phases: [{ duration: 78, arrivalRate: 17, rampTo: 1 }, { pause: 42 }] }, _genesis: 0, _start: 615000 },
+        ]
+        // Split #6
+        result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
+        expect(result).to.be.eql(expected)
+        expected = [
+          { config: { phases: [{ duration: 60, arrivalRate: 14, rampTo: 1 }] }, _genesis: 0, _start: 855000 },
+          { config: { phases: [{ duration: 71, arrivalRate: 25 }, { duration: 49, arrivalRate: 25, rampTo: 14 }] }, _genesis: 0, _start: 735000 },
+          { config: { phases: [{ duration: 71, arrivalRate: 16, rampTo: 1 }, { pause: 49 }] }, _genesis: 0, _start: 735000 },
+        ]
+        // Split #7
+        result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
+        expect(result).to.be.eql(expected)
+        expected = [
+          { config: { phases: [{ duration: 60, arrivalRate: 14, rampTo: 1 }] }, _genesis: 0, _start: 855000 },
+        ]
+        // Split #8
         result = task.plan.impl.planTask(result[1]._start, result[0], defaultSettings)
         expect(result).to.be.eql(expected)
       })
