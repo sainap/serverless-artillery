@@ -7,7 +7,7 @@ const yaml = require('js-yaml')
 
 const lambda = new aws.Lambda()
 
-const slsart = require(path.join('..', '..', 'lib', 'index.js')) // eslint-disable-line import/no-dynamic-require
+const slsart = require(path.join('..', '..', '..', 'lib', 'index.js')) // eslint-disable-line import/no-dynamic-require
 
 const stdArgv = ['node', 'slsart']
 

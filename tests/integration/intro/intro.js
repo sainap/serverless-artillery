@@ -1,4 +1,4 @@
-const idioms = require('../idioms')
+const idioms = require('../idioms/idioms')
 
 module.exports = () => idioms.runIn(__dirname, Promise.resolve()
   .then(idioms.functionDoesNotExist())
