@@ -78,9 +78,10 @@ const util = {
 
 const impl = {
   runIn: (dir, action) => {
-    util.replaceCwd(dir)
+    const cwd = process.cwd()
+    process.chdir(dir)
     action()
-      .finally(util.restoreCwd)
+      .finally(process.chdir(cwd))
   },
   loadAndMerge: (file, modifier) =>
     fs.readFileAsync(file)

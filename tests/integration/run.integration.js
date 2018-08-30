@@ -23,6 +23,6 @@ const loadWorkflow = require('./load/load')
 BbPromise.resolve()
   // ## !! PRIORITY 1 !! ##
   // The "intro" to the tool workflow
-  .then(introWorkflow)
-  // .then(loadWorkflow)
+  // .then(introWorkflow)
   .then(monitoringWorkflow)
+  // .then(loadWorkflow)
