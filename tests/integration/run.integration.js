@@ -24,5 +24,5 @@ BbPromise.resolve()
   // ## !! PRIORITY 1 !! ##
   // The "intro" to the tool workflow
   // .then(introWorkflow)
-  .then(monitoringWorkflow)
-  // .then(loadWorkflow)
+  // .then(monitoringWorkflow)
+  .then(loadWorkflow)
