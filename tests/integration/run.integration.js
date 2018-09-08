@@ -17,12 +17,12 @@ if (!aws.config.region) {
 }
 
 const introWorkflow = require('./intro/intro')
-const monitoringWorkflow = require('./monitor/monitor')
 const loadWorkflow = require('./load/load')
+const monitoringWorkflow = require('./monitor/monitor')
 
 BbPromise.resolve()
   // ## !! PRIORITY 1 !! ##
   // The "intro" to the tool workflow
   // .then(introWorkflow)
-  .then(monitoringWorkflow)
-  // .then(loadWorkflow)
+  .then(loadWorkflow)
+  // .then(monitoringWorkflow)

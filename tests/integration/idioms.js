@@ -89,6 +89,23 @@ const impl = {
         const base = yaml.safeLoad(content)
         return merge(base, modifier)
       }),
+  parseInput: (filePath) => {
+    try {
+      const script = yaml.safeLoad(fs.readFileSync(path.resolve(filePath), 'utf8'))
+      return script
+    } catch (e) {
+      console.log(e)
+    }
+  },
+  // sets desired duration for a given base script
+  // TODO: check for bad script & phaseControls
+  phaseUpdate: (script, phaseControls) => {
+    const result = JSON.parse(JSON.stringify(script)) // creating a deep copy of script
+    for (var key in phaseControls) {
+      result.config.phases[0][key] = phaseControls[key]
+    }
+    return result
+  },
   cleanupAll: () => BbPromise.all(impl.cleanupService().concat(impl.cleanupScript())),
   cleanupService: () => BbPromise.all(slsart.constants.ServerlessFiles.map(file => fs.unlinkAsync(file))),
   cleanupScript: () => fs.unlinkAsync(slsart.constants.DefaultScriptName),
