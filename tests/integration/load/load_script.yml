@@ -1,0 +1,11 @@
+_split:
+  maxChunkDurationInSeconds: 18
+config:
+  target: https://aws.amazon.com
+  phases:
+  - duration: 2
+    arrivalRate: 5
+scenarios:
+- flow:
+  - get:
+      url: "/"

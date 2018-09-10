@@ -11,39 +11,24 @@ const horizontal_test = idioms.phaseUpdate(baseScript, {"duration": 20, "arrival
 const vertical_test = idioms.phaseUpdate(baseScript, {"duration": 2, "arrivalRate": 50})
 const horizontal_and_vertical = idioms.phaseUpdate(baseScript, {"duration": 20, "arrivalRate": 50})
 
-// TODO: fix repetition of .then()s
-// TODO: Make a final report show up with all that went wrong
-module.exports = () => idioms.runIn(__dirname, () => BbPromise.resolve()
-  .then(idioms.functionDoesNotExist())
-  .then(() => BbPromise.resolve()
-    .then(idioms.deploy())
-    .then(idioms.functionExists())
-    .then(idioms.invoke({ "data" : JSON.stringify(basic)}))
-    .then(idioms.expect({ aggregate: { scenariosCreated: 10 } }))
-    .finally(idioms.remove())
-    .then(idioms.functionDoesNotExist()))
-  // .then(idioms.functionDoesNotExist())
-  // .then(() => BbPromise.resolve()
-  //   .then(idioms.deploy())
-  //   .then(idioms.functionExists())
-  //   .then(idioms.invoke({ "data" : JSON.stringify(horizontal_test)}))
-  //   .then(idioms.expect({ aggregate: { scenariosCreated: 100 } }))
-  //   .finally(idioms.remove())
-  //   .then(idioms.functionDoesNotExist()))
-  // .then(idioms.functionDoesNotExist())
-  // .then(() => BbPromise.resolve()
-  //   .then(idioms.deploy())
-  //   .then(idioms.functionExists())
-  //   .then(idioms.invoke({ "data" : JSON.stringify(vertical_test)}))
-  //   .then(idioms.expect({ aggregate: { scenariosCreated: 100 } }))
-  //   .finally(idioms.remove())
-  //   .then(idioms.functionDoesNotExist()))
-  // .then(idioms.functionDoesNotExist())
-  // .then(() => BbPromise.resolve()
-  //   .then(idioms.deploy())
-  //   .then(idioms.functionExists())
-  //   .then(idioms.invoke({ "data" : JSON.stringify(horizontal_and_vertical)}))
-  //   .then(idioms.expect({ aggregate: { scenariosCreated: 1000 } }))
-  //   .finally(idioms.remove())
-  //   .then(idioms.functionDoesNotExist()))
-  )
+module.exports = () =>
+  idioms.runIn(__dirname, () =>
+    ([
+      { data: basic, scenariosCreated: 10 },
+      { data: horizontal_test, scenariosCreated: 100 },
+      { data: vertical_test, scenariosCreated: 100 },
+      { data: horizontal_and_vertical, scenariosCreated: 1000 }
+    ])
+    .reduce(
+      (promise, {data, scenariosCreated}) => {
+        return promise
+        .then(idioms.functionDoesNotExist())
+        .then(() => BbPromise.resolve()
+          .then(idioms.deploy())
+          .then(idioms.functionExists())
+          .then(idioms.invoke({ "data" : JSON.stringify(basic)}))
+          .then(idioms.expect({ aggregate: { scenariosCreated: 10 } }))
+          .then(idioms.remove(), idioms.remove())
+          .then(idioms.functionDoesNotExist()))},
+      BbPromise.resolve())
+)
